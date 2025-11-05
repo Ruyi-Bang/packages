@@ -121,7 +121,8 @@ jobs:
           ORG_GRADLE_PROJECT_githubUsername:    ${{ github.actor }}
           ORG_GRADLE_PROJECT_githubToken:       ${{ secrets.GPR_KEY }}
         run: |
-          ./gradlew ${{ inputs['gradle-task'] }} \
+          INIT=".central/ci/init/github-packages.gradle"
+          ./gradlew -I "$INIT" ${{ inputs['gradle-task'] }} \
             --no-daemon \
             -P${{ inputs['version-prop'] }}='${{ needs.compute_version.outputs.version }}' \
             ${{ inputs['extra-args'] }}
