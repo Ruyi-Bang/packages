@@ -33,6 +33,6 @@ gradle.settingsEvaluated { settings ->
             }
         }
         // Optionally enforce a shared catalog for everyone:
-        dm.versionCatalogs.maybeCreate("libs").from("org.ruyibang:ott-platform-shared-versions:0.3")
+        dm.versionCatalogs.maybeCreate("libs").from("org.ruyibang:ottplatform.sharedlibraryversions:0.3")
     }
 }
