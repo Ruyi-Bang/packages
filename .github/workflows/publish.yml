@@ -18,7 +18,7 @@ on:
       gradle-task:
         type: string
         required: false
-        default: 'publish'
+        default: 'publish'         # used in the publish job only
       version-prop:
         type: string
         required: false
@@ -28,7 +28,7 @@ on:
         required: false
         default: ''
     secrets:
-      GPR_KEY:               # <-- use your existing secret name
+      GPR_KEY:
         required: true
 
   workflow_dispatch:
@@ -47,15 +47,35 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # 1) Checkout the CALLER repo (default)
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+
+      # 2) Checkout the PACKAGES repo to get the shared init script
+      - name: Checkout central init scripts
+        uses: actions/checkout@v4
+        with:
+          repository: Ruyi-Bang/packages
+          path: .central
+          fetch-depth: 1
+
       - uses: actions/setup-java@v4
         with:
           distribution: ${{ inputs.distribution }}
           java-version: ${{ inputs['java-version'] }}
+
       - uses: gradle/actions/setup-gradle@v4
+
       - name: Build
-        run: ./gradlew build --no-daemon
+        env:
+          PUBLISH_URL: ${{ inputs['publish-url'] }}
+          GPR_USER:    ${{ github.actor }}
+          GPR_TOKEN:   ${{ secrets.GPR_KEY }}
+          ORG_GRADLE_PROJECT_gpr.user:  ${{ github.actor }}
+          ORG_GRADLE_PROJECT_gpr.token: ${{ secrets.GPR_KEY }}
+        run: |
+          INIT=".central/ci/init/github-packages.gradle"
+          ./gradlew -I "$INIT" build --no-daemon
 
   compute_version:
     runs-on: ubuntu-latest
@@ -73,13 +93,12 @@ jobs:
         run: |
           set -euo pipefail
           FILE="build.gradle"
-          [[ -f "$FILE" ]] || { echo "Expected $FILE in repo root"; exit 1; }
+          [[ -f "$FILE" ]] || { echo "Expected $FILE in repo root; change FILE if using build.gradle.kts"; exit 1; }
 
           BASE=$(grep -oP 'version\s*=\s*\(findProperty\("projectVersion"\)\s*\?:\s*"\K[0-9]+\.[0-9]+(?=-SNAPSHOT")' "$FILE" || true)
           [[ -n "$BASE" ]] || { echo "Could not parse base version from $FILE"; exit 1; }
 
-          MAJOR="${BASE%%.*}"
-          MINOR="${BASE#*.}"
+          MAJOR="${BASE%%.*}"; MINOR="${BASE#*.}"
           LAST_BASE_COMMIT=$(git log -n 1 -G "version\s*=\s*\(findProperty\(\"projectVersion\"\)\s*\?:\s*\"${BASE}-SNAPSHOT\"" --pretty=format:%H -- "$FILE" || true)
           [[ -n "$LAST_BASE_COMMIT" ]] || LAST_BASE_COMMIT=$(git rev-list --max-parents=0 HEAD)
           COUNT=$(git rev-list "${LAST_BASE_COMMIT}..HEAD" --count)
@@ -99,27 +118,35 @@ jobs:
     needs: compute_version
     if: ${{ success() }}
     steps:
+      # 1) Checkout caller repo
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+
+      # 2) Checkout central init script
+      - name: Checkout central init scripts
+        uses: actions/checkout@v4
+        with:
+          repository: Ruyi-Bang/packages
+          path: .central
+          fetch-depth: 1
+
       - uses: actions/setup-java@v4
         with:
           distribution: ${{ inputs.distribution }}
           java-version: ${{ inputs['java-version'] }}
+
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Publish to GitHub Packages
         env:
-          # URL + credentials for your Gradle publishing block
           PUBLISH_URL: ${{ inputs['publish-url'] }}
           GPR_USER:    ${{ github.actor }}
-          GPR_TOKEN:   ${{ secrets.GPR_KEY }}   # map GPR_KEY -> GPR_TOKEN
-          GPR_KEY:     ${{ secrets.GPR_KEY }}   # keep original too (back-compat)
-
-          # Also expose as Gradle properties some builds expect
-          ORG_GRADLE_PROJECT_gpr.user:          ${{ github.actor }}
-          ORG_GRADLE_PROJECT_gpr.token:         ${{ secrets.GPR_KEY }}
-          ORG_GRADLE_PROJECT_githubUsername:    ${{ github.actor }}
-          ORG_GRADLE_PROJECT_githubToken:       ${{ secrets.GPR_KEY }}
+          GPR_TOKEN:   ${{ secrets.GPR_KEY }}
+          GPR_KEY:     ${{ secrets.GPR_KEY }}
+          ORG_GRADLE_PROJECT_gpr.user:       ${{ github.actor }}
+          ORG_GRADLE_PROJECT_gpr.token:      ${{ secrets.GPR_KEY }}
+          ORG_GRADLE_PROJECT_githubUsername: ${{ github.actor }}
+          ORG_GRADLE_PROJECT_githubToken:    ${{ secrets.GPR_KEY }}
         run: |
           INIT=".central/ci/init/github-packages.gradle"
           ./gradlew -I "$INIT" ${{ inputs['gradle-task'] }} \
