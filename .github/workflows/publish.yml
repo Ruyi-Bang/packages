@@ -1,39 +1,39 @@
 name: Reusable Build, Version, Publish to GitHub Packages
 
 on:
+  # Callable from other repos
   workflow_call:
     inputs:
       java-version:
         type: string
-        required: false
         default: '21'
       distribution:
         type: string
-        required: false
         default: 'temurin'
       publish-url:
         type: string
-        required: false
         default: 'https://maven.pkg.github.com/Ruyi-Bang/packages'
       gradle-task:
         type: string
-        required: false
-        default: 'publish'         # used in the publish job only
+        default: 'publish'
       version-prop:
         type: string
-        required: false
         default: 'projectVersion'
       extra-args:
         type: string
-        required: false
         default: ''
+      module-path:            # <-- NEW: subproject directory (e.g., services/token-service)
+        type: string
+        default: '.'
+      build-file:             # <-- NEW: 'build.gradle' or 'build.gradle.kts'
+        type: string
+        default: 'build.gradle'
     secrets:
       GPR_KEY:
         required: true
 
+  # Optional manual test from this repo only
   workflow_dispatch:
-  push:
-    branches: [ main ]
 
 permissions:
   contents: read
@@ -47,11 +47,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1) Checkout the CALLER repo (default)
+      # 1) Checkout the CALLER repo
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
 
-      # 2) Checkout the PACKAGES repo to get the shared init script
+      # 2) Checkout central init script from packages repo
       - name: Checkout central init scripts
         uses: actions/checkout@v4
         with:
@@ -66,7 +66,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build
+      - name: Build (uses central init for repos/creds)
         env:
           PUBLISH_URL: ${{ inputs['publish-url'] }}
           GPR_USER:    ${{ github.actor }}
@@ -80,33 +80,43 @@ jobs:
   compute_version:
     runs-on: ubuntu-latest
     needs: build
-    if: ${{ success() }}
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
 
-      - name: Compute version from base in build.gradle (no timestamps)
+      - name: Compute version for module (commit-count based)
         id: ver
         shell: bash
+        env:
+          MODULE_PATH: ${{ inputs.module-path }}
+          BUILD_FILE:  ${{ inputs.build-file }}
+          VERSION_PROP: ${{ inputs['version-prop'] }}
         run: |
           set -euo pipefail
-          FILE="build.gradle"
-          [[ -f "$FILE" ]] || { echo "Expected $FILE in repo root; change FILE if using build.gradle.kts"; exit 1; }
 
-          BASE=$(grep -oP 'version\s*=\s*\(findProperty\("projectVersion"\)\s*\?:\s*"\K[0-9]+\.[0-9]+(?=-SNAPSHOT")' "$FILE" || true)
+          FILE="$MODULE_PATH/$BUILD_FILE"
+          [[ -f "$FILE" ]] || { echo "Expected $FILE"; exit 1; }
+
+          # Try Groovy then KTS pattern
+          BASE_GROOVY=$(grep -oP "version\s*=\s*\(findProperty\(\"${VERSION_PROP}\"\)\s*\?:\s*\"\K[0-9]+\.[0-9]+(?=-SNAPSHOT\")" "$FILE" || true)
+          BASE_KTS=$(grep -oP "version\s*=\s*\(findProperty\(\"${VERSION_PROP}\"\)\s*as\s*String\?\s*\?\:\s*\"\K[0-9]+\.[0-9]+(?=-SNAPSHOT\")" "$FILE" || true)
+          BASE="${BASE_GROOVY:-${BASE_KTS:-}}"
           [[ -n "$BASE" ]] || { echo "Could not parse base version from $FILE"; exit 1; }
 
           MAJOR="${BASE%%.*}"; MINOR="${BASE#*.}"
-          LAST_BASE_COMMIT=$(git log -n 1 -G "version\s*=\s*\(findProperty\(\"projectVersion\"\)\s*\?:\s*\"${BASE}-SNAPSHOT\"" --pretty=format:%H -- "$FILE" || true)
-          [[ -n "$LAST_BASE_COMMIT" ]] || LAST_BASE_COMMIT=$(git rev-list --max-parents=0 HEAD)
-          COUNT=$(git rev-list "${LAST_BASE_COMMIT}..HEAD" --count)
+
+          # Last commit where that exact base default string exists in FILE
+          LAST_BASE_COMMIT=$(git log -n 1 -G "version\\s*=\\s*\\(findProperty\\(\"${VERSION_PROP}\"\\)\\s*(as\\s*String\\?\\s*)?\\?\\:\\s*\"${BASE}-SNAPSHOT\"" --pretty=format:%H -- "$FILE" || true)
+          [[ -n "$LAST_BASE_COMMIT" ]] || LAST_BASE_COMMIT=$(git rev-list --max-parents=0 HEAD -- "$MODULE_PATH")
+
+          COUNT=$(git rev-list "${LAST_BASE_COMMIT}..HEAD" --count -- "$MODULE_PATH")
           NEW_MINOR=$(( MINOR + COUNT ))
           V="${MAJOR}.${NEW_MINOR}"
 
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "Computed version=$V from base=$BASE (since $COUNT commits)"
+          echo "Computed base=$BASE in $FILE; commits since base in ${MODULE_PATH}: $COUNT -> version=$V"
 
       - name: Verify secret present
         run: |
@@ -116,13 +126,10 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     needs: compute_version
-    if: ${{ success() }}
     steps:
-      # 1) Checkout caller repo
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
 
-      # 2) Checkout central init script
       - name: Checkout central init scripts
         uses: actions/checkout@v4
         with:
@@ -142,7 +149,6 @@ jobs:
           PUBLISH_URL: ${{ inputs['publish-url'] }}
           GPR_USER:    ${{ github.actor }}
           GPR_TOKEN:   ${{ secrets.GPR_KEY }}
-          GPR_KEY:     ${{ secrets.GPR_KEY }}
           ORG_GRADLE_PROJECT_gpr.user:       ${{ github.actor }}
           ORG_GRADLE_PROJECT_gpr.token:      ${{ secrets.GPR_KEY }}
           ORG_GRADLE_PROJECT_githubUsername: ${{ github.actor }}
